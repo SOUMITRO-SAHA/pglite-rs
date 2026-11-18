@@ -17,6 +17,7 @@ name = "pglite_sys"
 
 [build-dependencies]
 ruzstd = "0.8"
+sha2 = "0.10"
 
 [dependencies]
 libc = "0.2"

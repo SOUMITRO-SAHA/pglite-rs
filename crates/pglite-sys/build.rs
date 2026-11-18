@@ -1,3 +1,4 @@
+use sha2::Digest;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,6 +8,7 @@ const RELEASE_BASE: &str = "https://github.com/Midwess/pglite-rs/releases/downlo
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PGLITE_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=PGLITE_NO_DOWNLOAD");
 
     if env::var("DOCS_RS").is_ok() {
         return;
@@ -43,6 +45,43 @@ fn main() {
 }
 
 fn prepare_static_lib(lib_dir: &Path) -> PathBuf {
+    if env::var("PGLITE_NO_DOWNLOAD").as_deref() == Ok("1") {
+        let target = env::var("TARGET").expect("Cargo supplies TARGET");
+        let manifest = lib_dir.join("pglite-artifacts.manifest");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        let contents = std::fs::read_to_string(&manifest).unwrap_or_else(|error| {
+            panic!(
+                "cannot read local native artifact manifest {}: {error}",
+                manifest.display()
+            )
+        });
+        assert!(
+            contents
+                .lines()
+                .any(|line| line == format!("target={target}")),
+            "local native artifacts do not declare Cargo target {target}"
+        );
+        let archive = lib_dir.join("libpglite.a");
+        let checksum = PathBuf::from(format!("{}.sha256", archive.display()));
+        println!("cargo:rerun-if-changed={}", archive.display());
+        println!("cargo:rerun-if-changed={}", checksum.display());
+        let expected = std::fs::read_to_string(&checksum).unwrap_or_else(|error| {
+            panic!(
+                "cannot read native artifact checksum {}: {error}",
+                checksum.display()
+            )
+        });
+        let bytes = std::fs::read(&archive).unwrap_or_else(|error| {
+            panic!("cannot read native engine {}: {error}", archive.display())
+        });
+        let actual = format!("{:x}", sha2::Sha256::digest(bytes));
+        assert_eq!(
+            expected.trim(),
+            actual,
+            "checksum mismatch for local native engine {}",
+            archive.display()
+        );
+    }
     let zst = lib_dir.join("libpglite.a.zst");
     if zst.exists() {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -119,6 +158,10 @@ fn artifact_lib_dir() -> Option<PathBuf> {
 }
 
 fn download_prebuilt() -> PathBuf {
+    assert!(
+        env::var("PGLITE_NO_DOWNLOAD").as_deref() != Ok("1"),
+        "PGLITE_NO_DOWNLOAD=1 and no local native engine was found; build it with native/build-libpglite.sh or set PGLITE_LIB_DIR"
+    );
     let target = env::var("TARGET").unwrap();
     let cache = env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))

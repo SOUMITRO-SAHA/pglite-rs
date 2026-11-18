@@ -1,3 +1,4 @@
+use sha2::Digest;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,6 +12,7 @@ const EXTENSIONS: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=PGLITE_NO_DOWNLOAD");
     if env::var("DOCS_RS").is_ok() {
         let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("pglite-runtime.tar");
         std::fs::write(&dest, []).expect("cannot write stub runtime tar");
@@ -92,11 +94,13 @@ fn resolve_base_tar(lib_dir: &Path) -> PathBuf {
     let plain = lib_dir.join("pglite-runtime.tar");
     if plain.exists() {
         println!("cargo:rerun-if-changed={}", plain.display());
+        SelfCheck::verify_local_inputs(lib_dir, &[&plain]);
         return plain;
     }
     let zst = lib_dir.join("pglite-runtime.tar.zst");
     if zst.exists() {
         println!("cargo:rerun-if-changed={}", zst.display());
+        SelfCheck::verify_local_inputs(lib_dir, &[&zst]);
         let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("pglite-runtime-base.tar");
         zstd_decompress(&zst, &out);
         return out;
@@ -134,7 +138,14 @@ fn resolve_ext_tar(name: &str, target: &str, lib_dir: &Path) -> PathBuf {
     let asset = format!("pglite-ext-{name}-{target}.tar.gz");
     let local = lib_dir.join(&asset);
     if local.exists() {
+        SelfCheck::verify_local_inputs(lib_dir, &[&local]);
         return local;
+    }
+    if SelfCheck::downloads_disabled() {
+        panic!(
+            "PGLITE_NO_DOWNLOAD=1 and {asset} is missing from {}; build it with native/build-extensions.sh",
+            lib_dir.display()
+        );
     }
     let cached = cache_dir().join(&asset);
     if cached.exists() {
@@ -155,6 +166,59 @@ fn resolve_ext_tar(name: &str, target: &str, lib_dir: &Path) -> PathBuf {
         "checksum mismatch for {asset}"
     );
     cached
+}
+
+struct SelfCheck;
+
+impl SelfCheck {
+    fn downloads_disabled() -> bool {
+        env::var("PGLITE_NO_DOWNLOAD").as_deref() == Ok("1")
+    }
+
+    fn verify_local_inputs(lib_dir: &Path, artifacts: &[&Path]) {
+        if !Self::downloads_disabled() {
+            return;
+        }
+        let target = env::var("TARGET").expect("Cargo supplies TARGET");
+        let manifest = lib_dir.join("pglite-artifacts.manifest");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        let contents = std::fs::read_to_string(&manifest).unwrap_or_else(|error| {
+            panic!(
+                "cannot read local native artifact manifest {}: {error}",
+                manifest.display()
+            )
+        });
+        assert!(
+            contents
+                .lines()
+                .any(|line| line == format!("target={target}")),
+            "local native artifacts do not declare Cargo target {target}"
+        );
+        for artifact in artifacts {
+            let checksum = PathBuf::from(format!("{}.sha256", artifact.display()));
+            println!("cargo:rerun-if-changed={}", artifact.display());
+            println!("cargo:rerun-if-changed={}", checksum.display());
+            let expected = std::fs::read_to_string(&checksum).unwrap_or_else(|error| {
+                panic!(
+                    "cannot read native artifact checksum {}: {error}",
+                    checksum.display()
+                )
+            });
+            let bytes = std::fs::read(artifact).unwrap_or_else(|error| {
+                panic!(
+                    "cannot read native artifact {}: {error}",
+                    artifact.display()
+                )
+            });
+            let actual = format!("{:x}", sha2::Sha256::digest(bytes));
+            assert_eq!(
+                expected.trim(),
+                actual,
+                "checksum mismatch for local native artifact {}",
+                artifact.display()
+            );
+        }
+    }
 }
 
 fn run_tar(args: &[&str]) {
