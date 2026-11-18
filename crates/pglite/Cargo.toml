@@ -16,6 +16,7 @@ name = "pglite"
 
 [build-dependencies]
 ruzstd = "0.8"
+sha2 = "0.10"
 
 [dependencies]
 pglite-rs-sys = { path = "../pglite-sys", version = "0.2.7" }
