@@ -154,8 +154,9 @@ extension archives by setting `PGLITE_NO_DOWNLOAD=1` and
 `PGLITE_LIB_DIR` to a directory containing the target-specific local
 artifacts. The directory must contain `pglite-artifacts.manifest` with a
 `target=<Cargo target triple>` line and a matching `.sha256` file beside each
-engine, runtime, and enabled extension archive. Missing or mismatched inputs
-fail the build.
+engine, runtime, and enabled extension archive. The engine may be
+`libpglite.a` or `libpglite.a.zst`; whichever file the build links is the
+file whose checksum is verified. Missing or mismatched inputs fail the build.
 
 Build the engine with `native/build-libpglite.sh` and extensions with
 `native/build-extensions.sh pgvector`, then generate checksums for

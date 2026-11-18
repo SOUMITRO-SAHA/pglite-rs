@@ -45,25 +45,48 @@ fn main() {
 }
 
 fn prepare_static_lib(lib_dir: &Path) -> PathBuf {
-    if env::var("PGLITE_NO_DOWNLOAD").as_deref() == Ok("1") {
-        let target = env::var("TARGET").expect("Cargo supplies TARGET");
-        let manifest = lib_dir.join("pglite-artifacts.manifest");
-        println!("cargo:rerun-if-changed={}", manifest.display());
-        let contents = std::fs::read_to_string(&manifest).unwrap_or_else(|error| {
-            panic!(
-                "cannot read local native artifact manifest {}: {error}",
-                manifest.display()
-            )
-        });
-        assert!(
-            contents
-                .lines()
-                .any(|line| line == format!("target={target}")),
-            "local native artifacts do not declare Cargo target {target}"
-        );
-        let archive = lib_dir.join("libpglite.a");
-        let checksum = PathBuf::from(format!("{}.sha256", archive.display()));
-        println!("cargo:rerun-if-changed={}", archive.display());
+    let zst = lib_dir.join("libpglite.a.zst");
+    if zst.exists() {
+        if downloads_disabled() {
+            verify_local_artifacts(lib_dir, &[&zst]);
+        }
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        zstd_decompress(&zst, &out_dir.join("libpglite.a"));
+        return out_dir;
+    }
+    if downloads_disabled() {
+        let plain = lib_dir.join("libpglite.a");
+        verify_local_artifacts(lib_dir, &[&plain]);
+    }
+    lib_dir.to_path_buf()
+}
+
+fn downloads_disabled() -> bool {
+    env::var("PGLITE_NO_DOWNLOAD").as_deref() == Ok("1")
+}
+
+/// The no-download mode links only artifacts whose checksum was verified
+/// against the manifest-declared inputs: whichever file the build uses,
+/// plain or compressed, is exactly the file checked.
+fn verify_local_artifacts(lib_dir: &Path, artifacts: &[&Path]) {
+    let target = env::var("TARGET").expect("Cargo supplies TARGET");
+    let manifest = lib_dir.join("pglite-artifacts.manifest");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    let contents = std::fs::read_to_string(&manifest).unwrap_or_else(|error| {
+        panic!(
+            "cannot read local native artifact manifest {}: {error}",
+            manifest.display()
+        )
+    });
+    assert!(
+        contents
+            .lines()
+            .any(|line| line == format!("target={target}")),
+        "local native artifacts do not declare Cargo target {target}"
+    );
+    for artifact in artifacts {
+        let checksum = PathBuf::from(format!("{}.sha256", artifact.display()));
+        println!("cargo:rerun-if-changed={}", artifact.display());
         println!("cargo:rerun-if-changed={}", checksum.display());
         let expected = std::fs::read_to_string(&checksum).unwrap_or_else(|error| {
             panic!(
@@ -71,24 +94,20 @@ fn prepare_static_lib(lib_dir: &Path) -> PathBuf {
                 checksum.display()
             )
         });
-        let bytes = std::fs::read(&archive).unwrap_or_else(|error| {
-            panic!("cannot read native engine {}: {error}", archive.display())
+        let bytes = std::fs::read(artifact).unwrap_or_else(|error| {
+            panic!(
+                "cannot read native artifact {}: {error}",
+                artifact.display()
+            )
         });
         let actual = format!("{:x}", sha2::Sha256::digest(bytes));
         assert_eq!(
             expected.trim(),
             actual,
-            "checksum mismatch for local native engine {}",
-            archive.display()
+            "checksum mismatch for local native artifact {}",
+            artifact.display()
         );
     }
-    let zst = lib_dir.join("libpglite.a.zst");
-    if zst.exists() {
-        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-        zstd_decompress(&zst, &out_dir.join("libpglite.a"));
-        return out_dir;
-    }
-    lib_dir.to_path_buf()
 }
 
 fn zstd_decompress(src: &Path, dst: &std::path::Path) {
@@ -159,7 +178,7 @@ fn artifact_lib_dir() -> Option<PathBuf> {
 
 fn download_prebuilt() -> PathBuf {
     assert!(
-        env::var("PGLITE_NO_DOWNLOAD").as_deref() != Ok("1"),
+        !downloads_disabled(),
         "PGLITE_NO_DOWNLOAD=1 and no local native engine was found; build it with native/build-libpglite.sh or set PGLITE_LIB_DIR"
     );
     let target = env::var("TARGET").unwrap();
